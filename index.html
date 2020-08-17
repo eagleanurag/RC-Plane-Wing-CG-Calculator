@@ -1,0 +1,643 @@
+<!DOCTYPE html>
+<!-- saved from url=(0022)http://fwcg.3dzone.dk/ -->
+<html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+
+<title>Flying wing CG calculator</title>
+
+<!--[if IE]><script type="text/javascript" src="excanvas.js"></script><![endif]-->
+
+<script type="text/javascript">
+
+var canvas, context;
+
+var canvas_max_width = 768;
+var canvas_max_height = 768;
+var border_size = 16;
+
+var wing_span, root_chord, tip_chord, sweep_dist, sweep_ang, sweep_type, cg_pos, show_mac_lines;
+
+var width, height, wing_area, mac_x, le_mac_y, te_mac_y, cg_dist;
+var zoom, canvas_width, canvas_height;
+
+function read_parameters(params)
+{
+	if (params.charAt(0) == "?")
+		params = params.substr(1);
+		
+	var param = params.split("&");
+	for (i in param)
+	{
+		var name_value = param[i].split("=");
+		var param_name = unescape(name_value[0]);
+		var param_value = unescape(name_value[1]);
+		
+		if (param_name == "wing_span")
+			document.getElementById("wing_span").value = param_value;
+		else if (param_name == "root_chord")
+			document.getElementById("root_chord").value = param_value;
+		else if (param_name == "tip_chord")
+			document.getElementById("tip_chord").value = param_value;
+		else if (param_name == "sweep_type")
+			document.getElementById("sweep_type").selectedIndex = param_value;
+		else if (param_name == "sweep")
+			document.getElementById("sweep").value = param_value;
+		else if (param_name == "cg_pos")
+		{
+			if (param_value == 15)
+				document.getElementById("cg_preset_15").checked = true;
+			else if (param_value == 20)
+				document.getElementById("cg_preset_20").checked = true;
+			else if (param_value == 25)
+				document.getElementById("cg_preset_25").checked = true;
+			else
+			{
+				document.getElementById("cg_preset_other").checked = true;
+				document.getElementById("cg_pos").value = param_value;
+			}
+		}
+		else if (param_name == "show_mac_lines")
+			document.getElementById("show_mac_lines").checked = (param_value == 1);
+	}
+}
+
+function build_url()
+{
+	var url = document.location.protocol + "//" + document.location.hostname + document.location.pathname
+	
+	url = url + "?wing_span=" + escape(document.getElementById("wing_span").value);
+	url = url + "&root_chord=" + escape(document.getElementById("root_chord").value);
+	url = url + "&tip_chord=" + escape(document.getElementById("tip_chord").value);
+	url = url + "&sweep_type=" + escape(document.getElementById("sweep_type").selectedIndex);
+	url = url + "&sweep=" + escape(document.getElementById("sweep").value);
+	if (document.getElementById("cg_preset_15").checked)
+		url = url + "&cg_pos=15";
+	else if (document.getElementById("cg_preset_20").checked)
+		url = url + "&cg_pos=20";
+	else if (document.getElementById("cg_preset_25").checked)
+		url = url + "&cg_pos=25";
+	else
+		url = url + "&cg_pos=" + escape(document.getElementById("cg_pos").value);
+		
+	if (document.getElementById("show_mac_lines").checked)
+		url = url + "&show_mac_lines=1";
+	else
+		url = url + "&show_mac_lines=0";
+
+	return url;
+}
+
+function sweep_to_degrees(sweep)
+{
+	return Math.atan(sweep / (wing_span / 2)) * 180 / Math.PI;
+}
+
+function sweep_to_distance(sweep)
+{
+	return Math.tan(sweep * Math.PI / 180) * wing_span / 2;
+}
+
+function state_write_to_UI()
+{
+	document.getElementById("wing_area").value = Math.round(wing_area * 100) / 100;
+	document.getElementById("mac_distance").value = Math.round(mac_x * 100) / 100;
+	document.getElementById("mac_length").value = Math.round((te_mac_y - le_mac_y) * 100) / 100;
+	document.getElementById("cg_dist").value = Math.round(cg_dist * 100) / 100;
+	document.getElementById("img_scale").value = Math.round(zoom * 100000) / 100000;
+	
+}
+
+function state_read_from_UI()
+{
+	wing_span = parseFloat(document.getElementById("wing_span").value);
+	root_chord = parseFloat(document.getElementById("root_chord").value);
+	tip_chord = parseFloat(document.getElementById("tip_chord").value);
+	sweep_type = document.getElementById("sweep_type").selectedIndex;
+	if (sweep_type == 0)
+	{
+		sweep_dist = parseFloat(document.getElementById("sweep").value);
+		sweep_ang = sweep_to_degrees(sweep_dist);
+	}
+	else
+	{
+		sweep_ang = parseFloat(document.getElementById("sweep").value);
+		sweep_dist = sweep_to_distance(sweep_ang);
+	}
+	
+	if (document.getElementById("cg_preset_15").checked)
+		cg_pos = 15;
+	else if (document.getElementById("cg_preset_20").checked)
+		cg_pos = 20;
+	else if (document.getElementById("cg_preset_25").checked)
+		cg_pos = 25;
+	else
+		cg_pos = parseFloat(document.getElementById("cg_pos").value);
+		
+	show_mac_lines = document.getElementById("show_mac_lines").checked;
+	
+	var err_str = "";
+	
+	if (wing_span.toString() == "NaN")
+		err_str += "\tWing span is invalid\n";
+	if (root_chord.toString() == "NaN")
+		err_str += "\tRoot chord is invalid\n";
+	if (tip_chord.toString() == "NaN")
+		err_str += "\tTip chord is invalid\n";
+	if (sweep_dist.toString() == "NaN" || sweep_dist < 0 || sweep_ang.toString() == "NaN" || sweep_ang > 89)
+		err_str += "\tSweep is invalid\n";
+	if (cg_pos.toString() == "NaN")
+		err_str += "\tCG position is invalid\n";
+		
+	if (err_str != "")
+		err_str = "Error reading input values:\n" + err_str + "\nPlease correct and re-calculate.";
+		
+	return err_str;
+}
+
+function sweep_type_changed()
+{
+	sweep_type = document.getElementById("sweep_type").selectedIndex;
+	if (sweep_type == 0)
+	{
+		var sweep = parseFloat(document.getElementById("sweep").value);
+		if (sweep.toString() != "NaN")
+			document.getElementById("sweep").value = Math.round(sweep_to_distance(sweep) * 100) / 100;
+	}
+	else
+	{
+		var sweep = parseFloat(document.getElementById("sweep").value);
+		if (sweep.toString() != "NaN")
+			document.getElementById("sweep").value = Math.round(sweep_to_degrees(sweep) * 100) / 100;
+	}
+}
+
+function compute()
+{
+	// Compute wing area
+	wing_area = (root_chord + tip_chord) * wing_span * 0.5;
+	
+	// Find LE and TE line formula
+	var le_b = 0;
+	var le_a = (sweep_dist - le_b) / (wing_span * 0.5);
+	var te_b = root_chord;
+	var te_a = ((sweep_dist + tip_chord) - te_b) / (wing_span * 0.5);
+
+	// Find helper line formula
+	var mac_b0 = -tip_chord;
+	var mac_a0 = ((sweep_dist + tip_chord + root_chord) - mac_b0) / (wing_span * 0.5);
+	var mac_b1 = root_chord + tip_chord;
+	var mac_a1 = ((sweep_dist - root_chord) - mac_b1) / (wing_span * 0.5);
+	
+	// Determine MAC using intersection of helper lines
+	mac_x = (mac_b1 - mac_b0) / (mac_a0 - mac_a1);
+	
+	// Compute MAC intersection with LE and TE
+	le_mac_y = le_a * mac_x + le_b;
+	te_mac_y = te_a * mac_x + te_b;
+	
+	// Compute CG
+	cg_dist = le_mac_y + (te_mac_y - le_mac_y) * cg_pos / 100;
+	
+	// Find canvas dimensions
+	width = wing_span;
+	if (show_mac_lines)
+		height = sweep_dist + tip_chord + root_chord + tip_chord;
+	else
+		height = sweep_dist + tip_chord;
+	if (root_chord > height)
+		height = root_chord;
+		
+	// Compute canvas size and scale
+	if (width > height)
+	{
+		canvas_width = canvas_max_width;
+		zoom = (canvas_width - border_size * 2) / width;
+		canvas_height = Math.round(height * zoom) + border_size * 2;
+	}
+	else
+	{
+		canvas_height = canvas_max_height;
+		zoom = (canvas_height - border_size * 2) / height;
+		canvas_width = Math.round(height * zoom) + border_size * 2;
+	}
+	
+	if (!show_mac_lines)
+		canvas_height += 20;
+}
+
+function canvas_begin()
+{
+	canvas.setAttribute("width", canvas_width);
+	canvas.setAttribute("height", canvas_height);
+	
+	context.strokeStyle="#000000";
+	context.strokeRect(0, 0, canvas_width, canvas_height);
+	
+	context.save();
+	if (show_mac_lines)
+		context.translate(canvas_width / 2, border_size + zoom * tip_chord);
+	else
+		context.translate(canvas_width / 2, border_size + 20);
+}
+
+function canvas_end()
+{
+	context.restore();
+}
+
+function paint_wing_bg()
+{
+	context.beginPath();
+	context.fillStyle="#f0f0f0";
+	context.moveTo(0, 0);
+	context.lineTo(zoom * wing_span / 2, zoom * sweep_dist);
+	context.lineTo(zoom * wing_span / 2, zoom * (sweep_dist + tip_chord));
+	context.lineTo(0, zoom * root_chord);
+	context.lineTo(zoom * wing_span / -2, zoom * (sweep_dist + tip_chord));
+	context.lineTo(zoom * wing_span / -2, zoom * sweep_dist);
+	context.closePath();
+	context.fill();
+}
+
+function paint_wing_outline()
+{
+	context.beginPath();
+	context.lineWidth = 2.0;
+	
+	context.moveTo(0, 0);
+	context.lineTo(zoom * wing_span / 2, zoom * sweep_dist);
+	context.lineTo(zoom * wing_span / 2, zoom * (sweep_dist + tip_chord));
+	context.lineTo(0, zoom * root_chord);
+	context.lineTo(zoom * wing_span / -2, zoom * (sweep_dist + tip_chord));
+	context.lineTo(zoom * wing_span / -2, zoom * sweep_dist);
+	context.closePath();
+	context.strokeStyle="#000000";
+	context.stroke();
+	
+	context.beginPath();
+	context.moveTo(0, 0);
+	context.lineTo(0, zoom * root_chord);
+	context.lineWidth = 1.0;
+	context.stroke();
+}
+
+function paint_mac_lines()
+{
+	context.beginPath();
+	context.moveTo(0, 0);
+	context.lineTo(0, zoom * -tip_chord);
+	context.lineTo(zoom * wing_span / 2, zoom * (sweep_dist + tip_chord + root_chord));
+	context.lineTo(zoom * wing_span / 2, zoom * (sweep_dist + tip_chord));
+	context.lineWidth = 0.5;
+	context.strokeStyle="#ff00ff";
+	context.stroke();
+
+	context.beginPath();
+	context.moveTo(0, zoom * root_chord);
+	context.lineTo(0, zoom * (root_chord + tip_chord));
+	context.lineTo(zoom * wing_span / 2, zoom * (sweep_dist - root_chord));
+	context.lineTo(zoom * wing_span / 2, zoom * sweep_dist);
+	context.stroke();
+}
+
+function paint_mac()
+{
+	context.beginPath();
+	context.moveTo(zoom * mac_x, zoom * le_mac_y);
+	context.lineTo(zoom * mac_x, zoom * te_mac_y);
+	context.strokeStyle="#0000ff";
+	context.lineWidth = 1.0;
+	context.stroke();
+
+	context.beginPath();
+	context.moveTo(0, zoom * cg_dist);
+	context.lineTo(zoom * mac_x, zoom * cg_dist);
+	context.stroke();
+	
+	var cg_radius = 10;
+
+	context.beginPath();
+	context.arc(0, zoom * cg_dist, cg_radius, 0, Math.PI * 2.0, false);
+	context.strokeStyle="#000000";
+	context.stroke();
+
+	context.beginPath();
+	context.arc(0, zoom * cg_dist, cg_radius, 0, Math.PI * 0.5, false);
+	context.lineTo(0, zoom * cg_dist);
+	context.arc(0, zoom * cg_dist, cg_radius, Math.PI * 1.0, Math.PI * 1.5, false);
+	context.lineTo(0, zoom * cg_dist);
+	context.fillStyle="#000000";
+	context.fill();
+}
+
+function paint_wing_span()
+{
+	context.beginPath();
+	context.strokeStyle="#0000ff";
+	context.lineWidth = 1.0;
+	context.moveTo(zoom * wing_span * -0.5, -5);
+	context.lineTo(zoom * wing_span * -0.5, -25);
+	context.stroke();
+	
+	context.beginPath();
+	context.moveTo(zoom * wing_span * 0.5, -5);
+	context.lineTo(zoom * wing_span * 0.5, -25);
+	context.stroke();
+
+	context.beginPath();
+	context.moveTo(zoom * wing_span * -0.5, -15);
+	context.lineTo(zoom * wing_span * 0.5, -15);
+	context.stroke();
+}
+
+function paint_root_chord()
+{
+	context.beginPath();
+	context.strokeStyle="#0000ff";
+	context.lineWidth = 1.0;
+	context.moveTo(-15, 0);
+	context.lineTo(-35, 0);
+	context.stroke();
+	
+	context.beginPath();
+	context.moveTo(-15, zoom * root_chord);
+	context.lineTo(-35, zoom * root_chord);
+	context.stroke();
+
+	context.beginPath();
+	context.moveTo(-25, 0);
+	context.lineTo(-25, zoom * root_chord);
+	context.stroke();
+}
+
+function paint_sweep_dist()
+{
+	context.beginPath();
+	context.strokeStyle="#0000ff";
+	context.lineWidth = 1.0;
+	context.moveTo(zoom * wing_span / 2 - 15, 0);
+	context.lineTo(zoom * wing_span / 2 - 35, 0);
+	context.stroke();
+	
+	context.beginPath();
+	context.moveTo(zoom * wing_span / 2 - 15, zoom * sweep_dist);
+	context.lineTo(zoom * wing_span / 2 - 35, zoom * sweep_dist);
+	context.stroke();
+
+	context.beginPath();
+	context.moveTo(zoom * wing_span / 2 - 25, 0);
+	context.lineTo(zoom * wing_span / 2 - 25, zoom * sweep_dist);
+	context.stroke();
+}
+
+function paint_sweep_ang()
+{
+	var a = sweep_ang * Math.PI / 180;
+	context.beginPath();
+	context.strokeStyle="#0000ff";
+	context.lineWidth = 1.0;
+	context.arc(0, -10, 40, 0, a, false);
+	context.stroke();
+
+	context.beginPath();
+	context.moveTo(75, -10);
+	context.lineTo(0, -10);
+	context.lineTo(0 + Math.cos(a) * 75, -10 + Math.sin(a) * 75);
+	context.stroke();
+}
+
+function paint_tip_chord()
+{
+	context.beginPath();
+	context.strokeStyle="#0000ff";
+	context.lineWidth = 1.0;
+	context.moveTo(zoom * wing_span / 2 - 15, zoom * sweep_dist);
+	context.lineTo(zoom * wing_span / 2 - 35, zoom * sweep_dist);
+	context.stroke();
+	
+	context.beginPath();
+	context.moveTo(zoom * wing_span / 2 - 15, zoom * (sweep_dist + tip_chord));
+	context.lineTo(zoom * wing_span / 2 - 35, zoom * (sweep_dist + tip_chord));
+	context.stroke();
+
+	context.beginPath();
+	context.moveTo(zoom * wing_span / 2 - 25, zoom * sweep_dist);
+	context.lineTo(zoom * wing_span / 2 - 25, zoom * (sweep_dist + tip_chord));
+	context.stroke();
+}
+
+function paint_mac_distance()
+{
+	context.beginPath();
+	context.strokeStyle="#0000ff";
+	context.lineWidth = 1.0;
+	context.moveTo(0, -5);
+	context.lineTo(0, -25);
+	context.stroke();
+	
+	context.beginPath();
+	context.moveTo(zoom * mac_x, -5);
+	context.lineTo(zoom * mac_x, -25);
+	context.stroke();
+
+	context.beginPath();
+	context.moveTo(0, -15);
+	context.lineTo(zoom * mac_x, -15);
+	context.stroke();
+}
+
+function paint_mac_length()
+{
+	context.beginPath();
+	context.strokeStyle="#0000ff";
+	context.lineWidth = 1.0;
+	context.moveTo(zoom * mac_x + 15, zoom * le_mac_y);
+	context.lineTo(zoom * mac_x + 35, zoom * le_mac_y);
+	context.stroke();
+	
+	context.beginPath();
+	context.moveTo(zoom * mac_x + 15, zoom * te_mac_y);
+	context.lineTo(zoom * mac_x + 35, zoom * te_mac_y);
+	context.stroke();
+
+	context.beginPath();
+	context.moveTo(zoom * mac_x + 25, zoom * le_mac_y);
+	context.lineTo(zoom * mac_x + 25, zoom * te_mac_y);
+	context.stroke();
+}
+
+function paint_cg_distance()
+{
+	context.beginPath();
+	context.strokeStyle="#0000ff";
+	context.lineWidth = 1.0;
+	context.moveTo(-15, 0);
+	context.lineTo(-35, 0);
+	context.stroke();
+	
+	context.beginPath();
+	context.moveTo(-15, zoom * cg_dist);
+	context.lineTo(-35, zoom * cg_dist);
+	context.stroke();
+
+	context.beginPath();
+	context.moveTo(-25, 0);
+	context.lineTo(-25, zoom * cg_dist);
+	context.stroke();
+}
+
+function paint_all()
+{
+	canvas_begin();
+	paint_wing_bg();
+	if (show_mac_lines)
+		paint_mac_lines();
+	paint_mac();
+	paint_wing_outline();
+	canvas_end();
+}
+
+function help_wing_span()
+{
+	canvas_begin();
+	paint_wing_bg();
+	paint_wing_span();
+	paint_wing_outline();
+	canvas_end();
+}
+
+function help_root_chord()
+{
+	canvas_begin();
+	paint_wing_bg();
+	paint_root_chord();
+	paint_wing_outline();
+	canvas_end();
+}
+
+function help_tip_chord()
+{
+	canvas_begin();
+	paint_wing_bg();
+	paint_tip_chord();
+	paint_wing_outline();
+	canvas_end();
+}
+
+function help_sweep()
+{
+	canvas_begin();
+	paint_wing_bg();
+	if (sweep_type == 0)
+		paint_sweep_dist();
+	else
+		paint_sweep_ang();
+	paint_wing_outline();
+	canvas_end();
+}
+
+function help_mac_length()
+{
+	canvas_begin();
+	paint_wing_bg();
+	paint_mac();
+	paint_mac_length();
+	paint_wing_outline();
+	canvas_end();
+}
+
+function help_mac_distance()
+{
+	canvas_begin();
+	paint_wing_bg();
+	paint_mac();
+	paint_mac_distance();
+	paint_wing_outline();
+	canvas_end();
+}
+
+function help_cg_distance()
+{
+	canvas_begin();
+	paint_wing_bg();
+	paint_mac();
+	paint_cg_distance();
+	paint_wing_outline();
+	canvas_end();
+}
+
+function calculate()
+{
+	var err_str = state_read_from_UI();
+	if (err_str != "")
+	{
+		alert(err_str);
+		return;
+	}
+	compute();
+	state_write_to_UI();
+	paint_all();
+}
+
+function init()
+{
+	canvas = document.getElementById("canvas");
+	context = canvas.getContext("2d");
+	read_parameters(document.location.search);
+	calculate();
+}
+
+</script>
+
+</head>
+<body onload="init();">
+
+<h1 style="color:#005580;">Flying wing CG calculator</h1>
+
+<canvas id="canvas" width="768" height="336"></canvas>
+
+<p>
+
+</p><table border="1" width="768">
+<tbody><tr>
+<td valign="top">
+<table>
+<tbody><tr><td style="color:#00a300;">Wing span</td><td><input id="wing_span" type="text" size="8" value="91.2" onfocus="help_wing_span();" onblur="paint_all();"></td></tr>
+<tr><td style="color:#00a300;">Root chord</td><td><input id="root_chord" type="text" size="8" value="22.7" onfocus="help_root_chord();" onblur="paint_all();"></td></tr>
+<tr><td style="color:#00a300;">Tip chord</td><td><input id="tip_chord" type="text" size="8" value="10.6" onfocus="help_tip_chord();" onblur="paint_all();"></td></tr>
+<tr><td style="color:#00a300;">Sweep</td><td><input id="sweep" type="text" size="8" value="24.6" onfocus="help_sweep();" onblur="paint_all();"> as <select id="sweep_type" onfocus="help_sweep();" onblur="paint_all();" onchange="sweep_type_changed(); help_sweep();"><option value="distance" selected="">distance</option><option name="degrees">degrees</option></select></td></tr>
+<tr><td style="color:#00a300;" valign="top">CG position</td><td>
+<input type="radio" name="cg_preset" id="cg_preset_15"> 15% - for beginners/testing new planes<br>
+<input type="radio" name="cg_preset" id="cg_preset_20" checked=""> 20% - allround<br>
+<input type="radio" name="cg_preset" id="cg_preset_25"> 25% - for experts<br>
+<input type="radio" name="cg_preset" id="cg_preset_other"> Other: <input id="cg_pos" type="text" value="22.5" size="8">%
+</td></tr>
+<tr><td style="color:#00a300;" valign="top">Options</td><td>
+<input type="checkbox" id="show_mac_lines"> Show MAC lines</td></tr>
+<tr><td></td><td><input type="button" value="  Update  " style="background-color:#008CBA;color:white;width:150px;height:40px;"  onclick="calculate();"></td></tr>
+</tbody></table>
+</td>
+<td valign="top">
+<table>
+<tbody><tr><td style="color:#00a300;">Wing area</td><td><input id="wing_area" type="text" size="8" value="" readonly=""></td></tr>
+<tr><td style="color:#00a300;">MAC distance</td><td><input id="mac_distance" type="text" size="8" value="" readonly="" onfocus="help_mac_distance();" onblur="paint_all();"></td></tr>
+<tr><td style="color:#00a300;">MAC length</td><td><input id="mac_length" type="text" size="8" value="" readonly="" onfocus="help_mac_length();" onblur="paint_all();"></td></tr>
+<tr><td style="color:#00a300;">CG distance</td><td><input id="cg_dist" type="text" size="8" value="" readonly="" onfocus="help_cg_distance();" onblur="paint_all();"></td></tr>
+<tr><td style="color:#00a300;">Image scale</td><td><input id="img_scale" type="text" size="8" value="" readonly=""> pixels/unit</td></tr>
+<tr><td style="color:#9f00a7;">About Me</td><td><div id="bookmark"><a href="https://www.visualcv.com/eagleanurag/" target='_blank'>eagleanurag</a></div></td></tr>
+</tbody></table>
+</td>
+</tr>
+</tbody></table>
+
+Comment, suggestions, errors 
+<script type="text/javascript">
+	emailE='gmail.com';
+	emailE=('helpmeinproject' + '@' + emailE);
+	document.write('<a href="mailto:' + emailE + '">' + emailE + '<\/a>');
+</script><a href="mailto:helpmeinproject@gmail.com"></a>
+<br>
+<p></p>
+
+
+<script language="javascript"></script>
+</body></html>
